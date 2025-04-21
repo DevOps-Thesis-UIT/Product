@@ -23,7 +23,7 @@ const mongo_uri = process.env.MONGO_URI;
 //const uri = `mongodb://${username}:${password}@${host}:${port}/${database}`;
 
 mongoose.connect(mongo_uri, { useNewUrlParser: true, useUnifiedTopology: true })
-  .then(() => console.log('Connected to MongoDB'))
+  .then(() => console.log(`Connected to: ${mongoose.connection.name} !`))
   .catch(err => console.log('MongoDB connection error:', err));
 
 // mongoose.connect(`mongodb+srv://${mongo_username}:${mongo_password}@${mongo_cluster}/${mongo_database}?retryWrites=true&w=majority`
