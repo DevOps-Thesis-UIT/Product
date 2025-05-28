@@ -7,9 +7,54 @@ on:
     branches: [ "main" ]
 
 jobs:
+  runner-oscap-scan:
+    name: OpenScap Scan
+    runs-on: self-hosted
+    timeout-minutes: 180
+
+    steps:
+
+    - name: Run SCAP scan
+      run: |
+        oscap xccdf eval \
+          --profile xccdf_org.ssgproject.content_profile_cis_level1_server \
+          --results-arf arf.xml \
+          --report report.html \
+          --oval-results \
+          ssg-ubuntu2204-ds.xml || true 
+
+    - name: Remediate Runner
+      run: ansible-playbook -i hosts.ini ubuntu2204-playbook-cis_level1_server.yml --skip-tags=avahi,demon,cups,isc-dhcp,ldap,rsync,samba,snmp,vsftpd,httpd,nginx,bind,cramfs,usb,sshd_disable_empty_passwords,accounts_user_interactive_home_directory_exists,file_groupownership_home_directories
+
+    - name: Rescan SCAP
+      run: |
+        oscap xccdf eval \
+          --profile xccdf_org.ssgproject.content_profile_cis_level1_server \
+          --results-arf arf.xml \
+          --report remediated_report.html \
+          --oval-results \
+          ssg-ubuntu2204-ds.xml || true 
+    
+    - name: Add Description
+      run: python3 description_runner.py
+
+    - name: Upload Report
+      uses: actions/upload-artifact@v4
+      with:
+        name: scap-report
+        path: |
+          report.html
+          remediated_report.html
+          modified_report.html
+
   build:
     name: Build and Push Docker Image
     runs-on: self-hosted
+
+    env:
+      REGISTRY_ALIAS: n4s8c1b7
+      REPOSITORY: product-service
+      IMAGE_TAG: ${{ github.run_number }}
 
     steps:
     - name: Checkout Source
@@ -17,6 +62,12 @@ jobs:
       with:
         fetch-depth: 0
     
+    - name: Sonar Scan
+      uses: SonarSource/sonarqube-scan-action@v5
+      env:
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v1
       with:
@@ -30,12 +81,21 @@ jobs:
       with:
         registry-type: public
 
-    - name: Build, tag, and push docker image to Amazon ECR Public
-      env:
-        REGISTRY: ${{ steps.login-ecr-public.outputs.registry }}
-        REGISTRY_ALIAS: n4s8c1b7
-        REPOSITORY: product-service
-        IMAGE_TAG: ${{ github.run_number }}
-      run: |
-        docker build -t $REGISTRY/$REGISTRY_ALIAS/$REPOSITORY:$IMAGE_TAG .
-        docker push $REGISTRY/$REGISTRY_ALIAS/$REPOSITORY:$IMAGE_TAG
+    - name: Export REGISTRY to environment
+      run: echo "REGISTRY=${{ steps.login-ecr-public.outputs.registry }}" >> $GITHUB_ENV
+
+    - name: Build docker image
+      run: docker build -t $REGISTRY/$REGISTRY_ALIAS/$REPOSITORY:$IMAGE_TAG .
+
+    - name: Scan Docker image with Trivy
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ env.REGISTRY }}/${{ env.REGISTRY_ALIAS }}/${{ env.REPOSITORY }}:${{ env.IMAGE_TAG }}
+        format: table
+        exit-code: 0
+        ignore-unfixed: true
+        vuln-type: os,library
+        severity: CRITICAL,HIGH
+
+    - name: Push docker image to Amazon ECR
+      run: docker push $REGISTRY/$REGISTRY_ALIAS/$REPOSITORY:$IMAGE_TAG
